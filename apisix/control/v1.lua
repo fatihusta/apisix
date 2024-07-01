@@ -67,17 +67,83 @@ function _M.schema()
 end
 
 
+local function get_stream_routes()
+    local stream_routes, err = core.etcd.get("/stream_routes", true)
+    if err then
+        core.log.error("failed to get stream routes from etcd.", err)
+	return {}
+    end
+
+    if stream_routes.body == nil then
+        return {}
+    end
+
+    return stream_routes.body.list
+end
+
+-- There is no direct access to stream context from http context.
+-- We can't access to lua_shared_dict in stream context.
+-- So we should use the socket connection between the contexts.
+local function get_stream_healthcheck_target_list(name)
+    local sock = ngx.socket.stream()
+    local ok, err = sock:connect("unix:" .. ngx.config.prefix() .. "logs/upstream_healthcheck_stream.sock")
+    if not ok then
+        core.log.error("failed to connect: ", err)
+        return nil, err
+    end
+
+    sock:settimeout(2000)  -- two seconds timeout
+    local bytes, err = sock:send(name)
+    if not bytes then
+        core.log.error("failed to send request: ", err)
+        return nil, err
+    end
+
+    local data = ""
+    while true do
+        local line, err = sock:receive()
+        if line then
+            core.log.debug("received: ", line)
+        data = data .. line
+        else
+            core.log.debug("failed to receive a line or all bytes are received: ", err)
+            break
+        end
+    end
+
+    ok, err = sock:close()
+    core.log.debug("close: ", ok, " ", err)
+
+    if data == "" then
+        return nil, "there is no target"
+    end
+
+    ngx.flush(true)
+    return core.json.decode(data), err
+end
+
+
 local healthcheck
-local function extra_checker_info(value)
+local function extra_checker_info(value, subsystem)
     if not healthcheck then
         healthcheck = require("resty.healthcheck")
     end
 
     local name = upstream_mod.get_healthchecker_name(value)
-    local nodes, err = healthcheck.get_target_list(name, "upstream-healthcheck")
-    if err then
-        core.log.error("healthcheck.get_target_list failed: ", err)
+    local nodes, err = {}, nil
+
+    if subsystem == "stream" then
+        nodes, err = get_stream_healthcheck_target_list(name)
+        if err then
+            core.log.error("stream_healthcheck.get_target_list failed: ", err)
+        end
+    else
+        nodes, err = healthcheck.get_target_list(name, "upstream-healthcheck")
+        if err then
+            core.log.error("healthcheck.get_target_list failed: ", err)
+        end
     end
+
     return {
         name = value.key,
         nodes = nodes,
@@ -94,7 +160,7 @@ local function get_checker_type(checks)
 end
 
 
-local function iter_and_add_healthcheck_info(infos, values)
+local function iter_and_add_healthcheck_info(infos, values, subsystem)
     if not values then
         return
     end
@@ -102,7 +168,7 @@ local function iter_and_add_healthcheck_info(infos, values)
     for _, value in core.config_util.iterate_values(values) do
         local checks = value.value.checks or (value.value.upstream and value.value.upstream.checks)
         if checks then
-            local info = extra_checker_info(value)
+            local info = extra_checker_info(value, subsystem)
             info.type = get_checker_type(checks)
             core.table.insert(infos, info)
         end
@@ -179,10 +245,13 @@ local function _get_health_checkers()
     local infos = {}
     local routes = get_routes()
     iter_and_add_healthcheck_info(infos, routes)
+    local stream_routes = get_stream_routes()
+    iter_and_add_healthcheck_info(infos, stream_routes, "stream")
     local services = get_services()
     iter_and_add_healthcheck_info(infos, services)
     local upstreams = get_upstreams()
     iter_and_add_healthcheck_info(infos, upstreams)
+    iter_and_add_healthcheck_info(infos, upstreams, "stream")
     return infos
 end
 
@@ -207,6 +276,11 @@ local function iter_and_find_healthcheck_info(values, src_type, src_id)
         return nil, str_format("%s[%s] not found", src_type, src_id)
     end
 
+    local subsystem = "http"
+    if src_type == "stream_routes" or src_type == "stream_upstreams" then
+        subsystem = "stream"
+    end
+
     for _, value in core.config_util.iterate_values(values) do
         if value.value.id == src_id then
             local checks = value.value.checks or
@@ -215,7 +289,7 @@ local function iter_and_find_healthcheck_info(values, src_type, src_id)
                 return nil, str_format("no checker for %s[%s]", src_type, src_id)
             end
 
-            local info = extra_checker_info(value)
+            local info = extra_checker_info(value, subsystem)
             info.type = get_checker_type(checks)
             return info
         end
@@ -237,9 +311,11 @@ function _M.get_health_checker()
     local values
     if src_type == "routes" then
         values = get_routes()
+    elseif src_type == "stream_routes" then
+        values = get_stream_routes()
     elseif src_type == "services" then
         values = get_services()
-    elseif src_type == "upstreams" then
+    elseif src_type == "upstreams" or src_type == "stream_upstreams" then
         values = get_upstreams()
     else
         return 400, {error_msg = str_format("invalid src type %s", src_type)}

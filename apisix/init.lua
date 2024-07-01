@@ -1178,6 +1178,10 @@ function _M.stream_log_phase()
         return
     end
 
+    if api_ctx then
+        healthcheck_passive(api_ctx)
+    end
+
     core.ctx.release_vars(api_ctx)
     if api_ctx.plugins then
         core.tablepool.release("plugins", api_ctx.plugins)

@@ -139,6 +139,7 @@ stream {
     lua_shared_dict lrucache-lock-stream {* stream.lua_shared_dict["lrucache-lock-stream"] *};
     lua_shared_dict etcd-cluster-health-check-stream {* stream.lua_shared_dict["etcd-cluster-health-check-stream"] *};
     lua_shared_dict worker-events-stream {* stream.lua_shared_dict["worker-events-stream"] *};
+    lua_shared_dict upstream-healthcheck-stream {* stream.lua_shared_dict["upstream-healthcheck-stream"] *};
 
     {% if enabled_discoveries["tars"] then %}
     lua_shared_dict tars-stream {* stream.lua_shared_dict["tars-stream"] *};
@@ -209,6 +210,36 @@ stream {
         }
     }
     {% end %}
+
+    server {
+        listen unix:{*apisix_lua_home*}/logs/upstream_healthcheck_stream.sock;
+        access_log off;
+        content_by_lua_block {
+            local core = require("apisix.core")
+            local healthcheck = require("resty.healthcheck")
+
+            ngx.status = 101
+            ngx.flush(true)
+            local sock = assert(ngx.req.socket(true))
+            sock:settimeouts(2000, 2000, 2000)  -- two seconds timeout for connect/read/write
+            -- The control api connects via this socket and sends upstream key as name.
+            -- upstream#/apisix/stream_routes/ROUTE_ID
+            -- upstream#/apisix/upstreams/ROUTE_ID
+            local name, err = sock:receiveany(1 * 1024) -- 1kb
+            if err then
+                core.log.error("failed to receive a line or all bytes are received: ", err)
+                ngx.exit(200) -- always return 200
+            end
+            local nodes, err = healthcheck.get_target_list(name, "upstream-healthcheck-stream")
+            if err then
+                core.log.error("healthcheck.get_target_list failed: ", err)
+                ngx.exit(200) -- always return 200
+            end
+
+            ngx.say(core.json.encode(nodes))
+            ngx.exit(200)
+        }
+    }
 
     server {
         {% for _, item in ipairs(stream_proxy.tcp or {}) do %}
