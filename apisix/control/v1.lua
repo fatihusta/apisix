@@ -104,7 +104,7 @@ local function get_stream_healthcheck_target_list(name)
         local line, err = sock:receive()
         if line then
             core.log.debug("received: ", line)
-        data = data .. line
+            data = data .. line
         else
             core.log.debug("failed to receive a line or all bytes are received: ", err)
             break
