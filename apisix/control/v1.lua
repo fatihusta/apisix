@@ -374,6 +374,23 @@ function _M.dump_route_info()
     return 200, route
 end
 
+function _M.dump_all_stream_routes_info()
+    local routes = get_stream_routes()
+    local infos = iter_add_get_routes_info(routes, nil)
+    return 200, infos
+end
+
+function _M.dump_stream_route_info()
+    local routes = get_stream_routes()
+    local uri_segs = core.utils.split_uri(ngx_var.uri)
+    local route_id = uri_segs[4]
+    local route = iter_add_get_routes_info(routes, route_id)
+    if not route then
+        return 404, {error_msg = str_format("route[%s] not found", route_id)}
+    end
+    return 200, route
+end
+
 local function iter_add_get_upstream_info(values, upstream_id)
     if not values then
         return nil
@@ -524,6 +541,18 @@ return {
         methods = {"GET"},
         uris = {"/route/*"},
         handler = _M.dump_route_info,
+    },
+    -- /v1/stream_routes
+    {
+        methods = {"GET"},
+        uris = {"/stream_routes"},
+        handler = _M.dump_all_stream_routes_info,
+    },
+    -- /v1/stream_route/*
+    {
+        methods = {"GET"},
+        uris = {"/stream_route/*"},
+        handler = _M.dump_stream_route_info,
     },
     -- /v1/services
     {
