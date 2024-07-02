@@ -223,8 +223,8 @@ stream {
             local sock = assert(ngx.req.socket(true))
             sock:settimeouts(2000, 2000, 2000)  -- two seconds timeout for connect/read/write
             -- The control api connects via this socket and sends upstream key as name.
-            -- upstream#/apisix/stream_routes/ROUTE_ID
-            -- upstream#/apisix/upstreams/ROUTE_ID
+            -- upstream#/apisix/stream_routes/ID
+            -- upstream#/apisix/upstreams/ID
             local name, err = sock:receiveany(1 * 1024) -- 1kb
             if err then
                 core.log.error("failed to receive a line or all bytes are received: ", err)
